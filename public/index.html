@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Câmera IP – Visualizador</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d0d1a;
+      color: #e0e0f0;
+      font-family: 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    /* ---- Header ---- */
+    header {
+      background: #13132b;
+      border-bottom: 2px solid #e94560;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 1.2rem;
+      color: #e94560;
+      letter-spacing: 1px;
+    }
+
+    #status-badge {
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      background: #333;
+      color: #aaa;
+      transition: all 0.4s;
+    }
+    #status-badge.connecting { background: #3a3000; color: #ffdd57; }
+    #status-badge.connected  { background: #003a1a; color: #4ecca3; }
+    #status-badge.error      { background: #3a0000; color: #ff6b6b; }
+
+    /* ---- Main ---- */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      gap: 16px;
+    }
+
+    /* ---- Canvas wrapper ---- */
+    #canvas-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 1280px;
+      background: #07071a;
+      border: 1px solid #222244;
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      aspect-ratio: 16/9;
+      box-shadow: 0 0 30px #00000099;
+    }
+
+    canvas {
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: contain;
+    }
+
+    #placeholder {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      pointer-events: none;
+    }
+
+    #placeholder span.icon { font-size: 3rem; }
+    #placeholder span.msg  { font-size: 1rem; color: #555577; }
+
+    /* ---- Info bar ---- */
+    #info-bar {
+      display: flex;
+      gap: 24px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .info-pill {
+      background: #13132b;
+      border: 1px solid #222244;
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 0.85rem;
+      color: #8888aa;
+    }
+
+    .info-pill span { color: #4ecca3; font-weight: 600; }
+
+    /* ---- Controls ---- */
+    #controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 8px 22px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: filter 0.2s;
+    }
+    button:hover { filter: brightness(1.15); }
+
+    #btn-connect    { background: #e94560; color: #fff; }
+    #btn-snapshot   { background: #0f3460; color: #fff; }
+    #btn-fullscreen { background: #1a1a3e; color: #8888cc; border: 1px solid #333355; }
+
+    /* ---- Footer ---- */
+    footer {
+      text-align: center;
+      padding: 8px;
+      font-size: 0.75rem;
+      color: #33334a;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>📷 Câmera IP &mdash; Visualizador</h1>
+  <span id="status-badge">Aguardando</span>
+</header>
+
+<main>
+  <div id="canvas-wrap">
+    <canvas id="video-canvas"></canvas>
+    <div id="placeholder">
+      <span class="icon">📷</span>
+      <span class="msg">Clique em CONECTAR para iniciar o stream</span>
+    </div>
+  </div>
+
+  <div id="info-bar">
+    <div class="info-pill">IP: <span>192.168.15.17</span></div>
+    <div class="info-pill">Porta: <span>554</span></div>
+    <div class="info-pill">Protocolo: <span>RTSP / onvif1</span></div>
+    <div class="info-pill" id="fps-pill" style="display:none">FPS: <span id="fps-val">—</span></div>
+  </div>
+
+  <div id="controls">
+    <button id="btn-connect"    onclick="toggleConnect()">CONECTAR</button>
+    <button id="btn-snapshot"   onclick="takeSnapshot()" disabled>SNAPSHOT</button>
+    <button id="btn-fullscreen" onclick="toggleFullscreen()">⛶ TELA CHEIA</button>
+  </div>
+</main>
+
+<footer>Câmera IP 192.168.15.17 &bull; Node.js RTSP Relay</footer>
+
+<script>
+  let player = null;
+  let connected = false;
+  let frameCount = 0, lastFpsTime = Date.now();
+
+  const canvas   = document.getElementById('video-canvas');
+  const badge    = document.getElementById('status-badge');
+  const ph       = document.getElementById('placeholder');
+  const btnConn  = document.getElementById('btn-connect');
+  const btnSnap  = document.getElementById('btn-snapshot');
+  const fpsPill  = document.getElementById('fps-pill');
+  const fpsVal   = document.getElementById('fps-val');
+
+  function setStatus(text, cls) {
+    badge.textContent = text;
+    badge.className = cls;
+  }
+
+  async function toggleConnect() {
+    if (connected) {
+      stopStream();
+    } else {
+      await startStream();
+    }
+  }
+
+  async function startStream() {
+    setStatus('Conectando…', 'connecting');
+    btnConn.disabled = true;
+
+    try {
+      const cfg = await fetch('/config').then(r => r.json());
+
+      // Load JSMpeg player script dynamically
+      await loadScript(cfg.scriptUrl);
+
+      ph.style.display = 'none';
+
+      player = new JSMpeg.Player(cfg.wsUrl, {
+        canvas,
+        autoplay: true,
+        audio: false,
+        onPlay: () => {
+          setStatus('● Conectado', 'connected');
+          connected = true;
+          btnConn.textContent = 'PARAR';
+          btnConn.style.background = '#555577';
+          btnSnap.disabled = false;
+          fpsPill.style.display = '';
+          startFpsCounter();
+        },
+        onError: (e) => {
+          setStatus('Erro na conexão', 'error');
+          console.error(e);
+        },
+      });
+
+      btnConn.disabled = false;
+    } catch (err) {
+      setStatus('Falha ao conectar', 'error');
+      btnConn.disabled = false;
+      console.error(err);
+    }
+  }
+
+  function stopStream() {
+    if (player) { player.destroy(); player = null; }
+    connected = false;
+    ph.style.display = 'flex';
+    btnConn.textContent = 'CONECTAR';
+    btnConn.style.background = '#e94560';
+    btnSnap.disabled = true;
+    fpsPill.style.display = 'none';
+    setStatus('Desconectado', '');
+
+    // Clear canvas
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  function takeSnapshot() {
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = canvas.width;
+    tmpCanvas.height = canvas.height;
+    tmpCanvas.getContext('2d').drawImage(canvas, 0, 0);
+    const link = document.createElement('a');
+    link.download = `snapshot_${Date.now()}.jpg`;
+    link.href = tmpCanvas.toDataURL('image/jpeg', 0.95);
+    link.click();
+  }
+
+  function toggleFullscreen() {
+    const wrap = document.getElementById('canvas-wrap');
+    if (!document.fullscreenElement) {
+      wrap.requestFullscreen().catch(console.error);
+    } else {
+      document.exitFullscreen();
+    }
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+
+  function startFpsCounter() {
+    frameCount = 0;
+    lastFpsTime = Date.now();
+
+    function tick() {
+      if (!connected) return;
+      const now = Date.now();
+      if (now - lastFpsTime >= 1000) {
+        fpsVal.textContent = frameCount;
+        frameCount = 0;
+        lastFpsTime = now;
+      }
+      requestAnimationFrame(tick);
+    }
+
+    // Hook into canvas draw calls to count frames
+    const origDraw = canvas.getContext('2d').drawImage.bind(canvas.getContext('2d'));
+    canvas.getContext('2d').drawImage = function(...args) {
+      frameCount++;
+      return origDraw(...args);
+    };
+
+    requestAnimationFrame(tick);
+  }
+</script>
+
+</body>
+</html>
