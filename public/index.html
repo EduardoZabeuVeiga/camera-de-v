@@ -115,7 +115,37 @@
       display: flex;
       gap: 12px;
       flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
     }
+
+    /* ---- PTZ ---- */
+    #ptz-pad {
+      display: grid;
+      grid-template-columns: repeat(3, 40px);
+      grid-template-rows: repeat(3, 40px);
+      gap: 4px;
+    }
+
+    .ptz-btn {
+      width: 40px;
+      height: 40px;
+      border: none;
+      border-radius: 6px;
+      background: #1a1a3e;
+      color: #8888cc;
+      font-size: 1.1rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+      border: 1px solid #333355;
+      padding: 0;
+    }
+    .ptz-btn:hover { background: #2a2a5e; color: #fff; }
+    .ptz-btn:active { background: #e94560; color: #fff; }
+    .ptz-btn.center { background: #0f3460; font-size: 0.7rem; color: #4ecca3; }
 
     button {
       padding: 8px 22px;
@@ -131,6 +161,31 @@
     #btn-connect    { background: #e94560; color: #fff; }
     #btn-snapshot   { background: #0f3460; color: #fff; }
     #btn-fullscreen { background: #1a1a3e; color: #8888cc; border: 1px solid #333355; }
+
+    #volume-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #8888aa;
+      font-size: 0.9rem;
+    }
+    #volume-slider {
+      -webkit-appearance: none;
+      width: 100px;
+      height: 4px;
+      border-radius: 2px;
+      background: #333355;
+      outline: none;
+      cursor: pointer;
+    }
+    #volume-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #4ecca3;
+      cursor: pointer;
+    }
 
     /* ---- Footer ---- */
     footer {
@@ -168,6 +223,18 @@
     <button id="btn-connect"    onclick="toggleConnect()">CONECTAR</button>
     <button id="btn-snapshot"   onclick="takeSnapshot()" disabled>SNAPSHOT</button>
     <button id="btn-fullscreen" onclick="toggleFullscreen()">⛶ TELA CHEIA</button>
+
+    <div id="ptz-pad">
+      <div></div>
+      <button class="ptz-btn" onmousedown="ptz(0,1)"  onmouseup="ptzStop()" ontouchstart="ptz(0,1)"  ontouchend="ptzStop()">▲</button>
+      <div></div>
+      <button class="ptz-btn" onmousedown="ptz(-1,0)" onmouseup="ptzStop()" ontouchstart="ptz(-1,0)" ontouchend="ptzStop()">◀</button>
+      <button class="ptz-btn center" onclick="ptzStop()">■</button>
+      <button class="ptz-btn" onmousedown="ptz(1,0)"  onmouseup="ptzStop()" ontouchstart="ptz(1,0)"  ontouchend="ptzStop()">▶</button>
+      <div></div>
+      <button class="ptz-btn" onmousedown="ptz(0,-1)" onmouseup="ptzStop()" ontouchstart="ptz(0,-1)" ontouchend="ptzStop()">▼</button>
+      <div></div>
+    </div>
   </div>
 </main>
 
@@ -176,7 +243,8 @@
 <script>
   let player = null;
   let connected = false;
-  let frameCount = 0, lastFpsTime = Date.now();
+  let frameCount = 0;
+  let fpsInterval = null;
 
   const canvas   = document.getElementById('video-canvas');
   const badge    = document.getElementById('status-badge');
@@ -192,11 +260,8 @@
   }
 
   async function toggleConnect() {
-    if (connected) {
-      stopStream();
-    } else {
-      await startStream();
-    }
+    if (connected) stopStream();
+    else await startStream();
   }
 
   async function startStream() {
@@ -205,8 +270,6 @@
 
     try {
       const cfg = await fetch('/config').then(r => r.json());
-
-      // Load JSMpeg player script dynamically
       await loadScript(cfg.scriptUrl);
 
       ph.style.display = 'none';
@@ -214,7 +277,8 @@
       player = new JSMpeg.Player(cfg.wsUrl, {
         canvas,
         autoplay: true,
-        audio: false,
+        audio: true,
+        volume: 1,
         onPlay: () => {
           setStatus('● Conectado', 'connected');
           connected = true;
@@ -224,6 +288,7 @@
           fpsPill.style.display = '';
           startFpsCounter();
         },
+        onVideoDecode: () => { frameCount++; },
         onError: (e) => {
           setStatus('Erro na conexão', 'error');
           console.error(e);
@@ -239,6 +304,7 @@
   }
 
   function stopStream() {
+    if (fpsInterval) { clearInterval(fpsInterval); fpsInterval = null; }
     if (player) { player.destroy(); player = null; }
     connected = false;
     ph.style.display = 'flex';
@@ -247,66 +313,49 @@
     btnSnap.disabled = true;
     fpsPill.style.display = 'none';
     setStatus('Desconectado', '');
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+  }
 
-    // Clear canvas
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  function startFpsCounter() {
+    frameCount = 0;
+    fpsInterval = setInterval(() => {
+      fpsVal.textContent = frameCount;
+      frameCount = 0;
+    }, 1000);
+  }
+
+  function ptz(x, y) {
+    fetch('/ptz/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ x: x * 0.5, y: y * 0.5 }) });
+  }
+
+  function ptzStop() {
+    fetch('/ptz/stop', { method: 'POST' });
   }
 
   function takeSnapshot() {
-    const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = canvas.width;
-    tmpCanvas.height = canvas.height;
-    tmpCanvas.getContext('2d').drawImage(canvas, 0, 0);
+    const tmp = document.createElement('canvas');
+    tmp.width = canvas.width;
+    tmp.height = canvas.height;
+    tmp.getContext('2d').drawImage(canvas, 0, 0);
     const link = document.createElement('a');
     link.download = `snapshot_${Date.now()}.jpg`;
-    link.href = tmpCanvas.toDataURL('image/jpeg', 0.95);
+    link.href = tmp.toDataURL('image/jpeg', 0.95);
     link.click();
   }
 
   function toggleFullscreen() {
     const wrap = document.getElementById('canvas-wrap');
-    if (!document.fullscreenElement) {
-      wrap.requestFullscreen().catch(console.error);
-    } else {
-      document.exitFullscreen();
-    }
+    if (!document.fullscreenElement) wrap.requestFullscreen().catch(console.error);
+    else document.exitFullscreen();
   }
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
       const s = document.createElement('script');
-      s.src = src;
-      s.onload = resolve;
-      s.onerror = reject;
+      s.src = src; s.onload = resolve; s.onerror = reject;
       document.head.appendChild(s);
     });
-  }
-
-  function startFpsCounter() {
-    frameCount = 0;
-    lastFpsTime = Date.now();
-
-    function tick() {
-      if (!connected) return;
-      const now = Date.now();
-      if (now - lastFpsTime >= 1000) {
-        fpsVal.textContent = frameCount;
-        frameCount = 0;
-        lastFpsTime = now;
-      }
-      requestAnimationFrame(tick);
-    }
-
-    // Hook into canvas draw calls to count frames
-    const origDraw = canvas.getContext('2d').drawImage.bind(canvas.getContext('2d'));
-    canvas.getContext('2d').drawImage = function(...args) {
-      frameCount++;
-      return origDraw(...args);
-    };
-
-    requestAnimationFrame(tick);
   }
 </script>
 
